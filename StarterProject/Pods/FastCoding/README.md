@@ -18,7 +18,7 @@ FastCoder can also serialize your custom classes automatically using property in
 Supported OS & SDK Versions
 -----------------------------
 
-* Supported build target - iOS 11.0 / Mac OS 10.12 (Xcode 9.0)
+* Supported build target - iOS 11.0 / Mac OS 10.12 (Xcode 9.2)
 * Earliest supported deployment target - iOS 9.0 / Mac OS 10.10
 * Earliest compatible deployment target - iOS 4.0 / Mac OS 10.6
 
@@ -127,7 +127,11 @@ This method is used to supply an alternative class to use for coding/decoding an
  
     - (BOOL)preferFastCoding;
 
-Because FastCoding automatically supports NSCoding, any object that conforms to the NSCoding protocol (except for types that are explicitly supported by FastCoding) will be encoded using the NSCoding methods by default. This is better for compatibility purposes, but may be signficantly slower than using the FastCoding protocol. If your class supports both NSCoding and FastCoding, and you would prefer FastCoder to use the FastCoding protocol, override this method and return `YES` (the default value is `NO`).
+Because FastCoding automatically supports NSCoding, any object that conforms to the NSCoding protocol (except for types that are explicitly supported by FastCoding) will be encoded using the NSCoding methods by default. This is better for compatibility purposes, but may be significantly slower than using the FastCoding protocol. If your class supports both NSCoding and FastCoding, and you would prefer FastCoder to use the FastCoding protocol, override this method and return `YES` (the default value is `NO`).
+
+    - (BOOL)preferKeyedArchiver;
+    
+Occasionally you may find that a given class does not work correctly with the FastCoding protocol. Typically this will only be the case for built-in Foundation or UIKit/AppKit classes (the only known case so far is AppKit's `NSColorSpace` - if you find any others, please report them). In such cases, you can use `preferKeyedArchiver` to encode these objects using an ordinary `NSKeyedArchive` embedded within the FastCoded archive. Note that this option has no effect if `preferFastCoding` is set to `YES`.
  
 
 Overriding Default FastCoding Behaviour
@@ -237,6 +241,13 @@ Load the file and save it again. Now change the macro back again.
     
 Release notes
 ------------------
+
+Version 3.3
+
+- Fix objects being released during decoding, causing a crash with exc_bad_access
+- Added `prefersKeyedArchive` option to fix a problem with encoding `NSColorSpace` objects
+- Fixed precision loss when serializing NSDate objects (now uses -timeIntervalSinceReferenceDate rather than -timeIntervalSince1970)
+- Fixed build errors on macOS
 
 Version 3.2.2
 

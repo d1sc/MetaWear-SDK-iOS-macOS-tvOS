@@ -1,7 +1,7 @@
 //
 //  FastCoding.m
 //
-//  Version 3.2.2
+//  Version 3.3
 //
 //  Created by Nick Lockwood on 09/12/2013.
 //  Copyright (c) 2013 Charcoal Design
@@ -61,7 +61,7 @@ NSString *const FastCodingException = @"FastCodingException";
 
 static const uint32_t FCIdentifier = 'FAST';
 static const uint16_t FCMajorVersion = 3;
-static const uint16_t FCMinorVersion = 2;
+static const uint16_t FCMinorVersion = 3;
 
 
 typedef struct
@@ -97,7 +97,7 @@ typedef NS_ENUM(uint8_t, FCType)
     FCTypeFloat32,
     FCTypeFloat64,
     FCTypeData,
-    FCTypeDate,
+    FCTypeLegacyDate,
     FCTypeMutableString,
     FCTypeMutableDictionary,
     FCTypeMutableArray,
@@ -122,6 +122,8 @@ typedef NS_ENUM(uint8_t, FCType)
     FCTypeDecimalNumber,
     FCTypeOne,
     FCTypeZero,
+    FCTypeKeyedArchive,
+    FCTypeDate,
   
     FCTypeCount // sentinel value
 };
@@ -191,6 +193,7 @@ typedef id FCTypeConstructor(FCNSDecoder *);
 {
     
 @public
+    FCHeader _header;
     NSUInteger *_offset;
     const void *_input;
     NSUInteger _total;
@@ -230,12 +233,12 @@ typedef id FCTypeConstructor(FCNSDecoder *);
 
 static Boolean FCEqualityCallback(const void *value1, const void *value2)
 {
-    return (Boolean)[(id)value1 isEqual:(id)value2];
+    return (Boolean)[(__bridge id)value1 isEqual:(__bridge id)value2];
 }
 
 static CFHashCode	FCHashCallback(const void *value)
 {
-    return [(id)value hash];
+    return [(__bridge id)value hash];
 }
 
 static inline NSUInteger FCCacheParsedObject(__unsafe_unretained id object, __unsafe_unretained NSData *cache)
@@ -651,11 +654,20 @@ static id FCReadMutableData(__unsafe_unretained FCNSDecoder *decoder)
     return data;
 }
 
-static id FCReadDate(__unsafe_unretained FCNSDecoder *decoder)
+static id FCReadLegacyDate(__unsafe_unretained FCNSDecoder *decoder)
 {
     FC_ALIGN_INPUT(NSTimeInterval, *decoder->_offset);
     FC_READ_VALUE(NSTimeInterval, *decoder->_offset, decoder->_input, decoder->_total);
     __autoreleasing NSDate *date = [NSDate dateWithTimeIntervalSince1970:value];
+    FCCacheParsedObject(date, decoder->_objectCache);
+    return date;
+}
+
+static id FCReadDate(__unsafe_unretained FCNSDecoder *decoder)
+{
+    FC_ALIGN_INPUT(NSTimeInterval, *decoder->_offset);
+    FC_READ_VALUE(NSTimeInterval, *decoder->_offset, decoder->_input, decoder->_total);
+    __autoreleasing NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:value];
     FCCacheParsedObject(date, decoder->_objectCache);
     return date;
 }
@@ -866,17 +878,7 @@ static id FCReadNSCodedObject(__unsafe_unretained FCNSDecoder *decoder)
     }
     else
     {
-        const CFDictionaryKeyCallBacks stringKeyCallbacks =
-        {
-            0,
-            NULL,
-            NULL,
-            NULL,
-            FCEqualityCallback,
-            FCHashCallback
-        };
-        
-        __autoreleasing id properties = CFBridgingRelease(CFDictionaryCreateMutable(NULL, 0, &stringKeyCallbacks, NULL));
+        __autoreleasing id properties = [NSMutableDictionary dictionary];
         decoder->_properties = properties;
     }
     while (true)
@@ -889,6 +891,14 @@ static id FCReadNSCodedObject(__unsafe_unretained FCNSDecoder *decoder)
     id object = FC_AUTORELEASE([[NSClassFromString(className) alloc] initWithCoder:decoder]);
     [decoder->_propertyDictionaryPool addObject:decoder->_properties];
     decoder->_properties = oldProperties;
+    FCCacheParsedObject(object, decoder->_objectCache);
+    return object;
+}
+
+static id FCReadKeyedArchive(__unsafe_unretained FCNSDecoder *decoder)
+{
+    NSData *data = FCReadData(decoder);
+    id object = [NSKeyedUnarchiver unarchiveObjectWithData:data];
     FCCacheParsedObject(object, decoder->_objectCache);
     return object;
 }
@@ -944,6 +954,7 @@ id FCParseData(NSData *data, FCTypeConstructor *constructors[])
     //create decoder
     NSUInteger offset = sizeof(header);
     FCNSDecoder *decoder = FC_AUTORELEASE([[FCNSDecoder alloc] init]);
+    decoder->_header = header;
     decoder->_constructors = constructors;
     decoder->_input = input;
     decoder->_offset = &offset;
@@ -1132,7 +1143,7 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
         FCReadFloat32,
         FCReadFloat64,
         FCReadData,
-        FCReadDate,
+        FCReadLegacyDate,
         FCReadMutableString,
         FCReadMutableDictionary,
         FCReadMutableArray,
@@ -1156,7 +1167,9 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
         FCReadNSCodedObject,
         FCReadDecimalNumber,
         FCReadOne,
-        FCReadZero
+        FCReadZero,
+        FCReadKeyedArchive,
+        FCReadDate,
     };
     
     return FCParseData(data, constructors);
@@ -1188,7 +1201,7 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
         FCReadFloat32,
         FCReadFloat64,
         FCReadData,
-        FCReadDate,
+        FCReadLegacyDate,
         FCReadMutableString,
         FCReadMutableDictionary,
         FCReadMutableArray,
@@ -1212,7 +1225,9 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
         NULL,
         FCReadDecimalNumber,
         FCReadOne,
-        FCReadZero
+        FCReadZero,
+        NULL,
+        FCReadDate,
     };
   
     return FCParseData(data, constructors);
@@ -1507,6 +1522,11 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
     return NO;
 }
 
+- (BOOL)preferKeyedArchiver
+{
+    return [@[@"NSColorSpace"] containsObject:NSStringFromClass([self classForCoder])];
+}
+
 - (void)FC_encodeWithCoder:(__unsafe_unretained FCNSCoder *)coder
 {
     if (FCWriteObjectAlias(self, coder)) return;
@@ -1515,11 +1535,20 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
     if (![self preferFastCoding] && [self conformsToProtocol:@protocol(NSCoding)])
     {
         //write object
-        FCWriteType(FCTypeNSCodedObject, coder->_output);
-        FCWriteObject(NSStringFromClass([self classForCoder]), coder);
-        [(id <NSCoding>)self encodeWithCoder:coder];
-        FCWriteType(FCTypeNil, coder->_output);
-        FCCacheWrittenObject(self, coder->_objectCache);
+        if ([self preferKeyedArchiver])
+        {
+            FCWriteType(FCTypeKeyedArchive, coder->_output);
+            FCWriteObject([NSKeyedArchiver archivedDataWithRootObject:self], coder);
+            FCCacheWrittenObject(self, coder->_objectCache);
+        }
+        else
+        {
+            FCWriteType(FCTypeNSCodedObject, coder->_output);
+            FCWriteObject(NSStringFromClass([self classForCoder]), coder);
+            [(id <NSCoding>)self encodeWithCoder:coder];
+            FCWriteType(FCTypeNil, coder->_output);
+            FCCacheWrittenObject(self, coder->_objectCache);
+        }
         return;
     }
     
@@ -1701,7 +1730,7 @@ static void FCWriteObject(__unsafe_unretained id object, __unsafe_unretained FCN
     if (FCWriteObjectAlias(self, coder)) return;
     FCCacheWrittenObject(self, coder->_objectCache);
     FCWriteType(FCTypeDate, coder->_output);
-    NSTimeInterval value = [self timeIntervalSince1970];
+    NSTimeInterval value = [self timeIntervalSinceReferenceDate];
     FC_ALIGN_OUTPUT(NSTimeInterval, coder->_output);
     [coder->_output appendBytes:&value length:sizeof(value)];
 }
